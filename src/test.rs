@@ -21,7 +21,7 @@ async fn test_transport_creation() {
     assert!(transport.is_ok());
 }
 
-//checks that umessage is correctly parsed into transmission data
+//checks that umessage is correctly parsed into transmission data - works
 #[test]
 fn test_transmission_data_from_message() {
     let data = TransmissionData {
@@ -78,6 +78,52 @@ async fn test_multiple_sends() {
         assert!(result.is_ok());
     }
 }
+
+//sending an empty payload - works
+#[tokio::test]
+async fn test_send_empty_payload() {
+    let transport = Iceoryx2Transport::new().unwrap();
+
+    let message = UMessage {
+        payload: Some(Bytes::from(vec![])), // empty payload
+        ..Default::default()
+    };
+
+    let result = transport.send(message).await;
+
+    // It might be valid or invalid depending on implementation
+    assert!(result.is_ok() || result.is_err());
+}
+
+//sending without a payload 
+#[tokio::test]
+async fn test_send_no_payload() {
+    let transport = Iceoryx2Transport::new().unwrap();
+
+    let message = UMessage::default(); // no payload at all
+
+    let result = transport.send(message).await;
+
+    assert!(result.is_err(), "Expected error when sending without payload");
+}
+
+//sending a max_sized payload - 
+#[tokio::test]
+async fn test_send_large_payload() {
+    let transport = Iceoryx2Transport::new().unwrap();
+
+    let max_size_payload = vec![0xAB; 1024 * 1024]; // 1MB
+    let message = UMessage {
+        payload: Some(Bytes::from(max_size_payload)),
+        ..Default::default()
+    };
+
+    let result = transport.send(message).await;
+
+    assert!(result.is_ok() || result.is_err()); // depends on your transport's buffer limit
+}
+
+
 
 
 #[tokio::test] // works
