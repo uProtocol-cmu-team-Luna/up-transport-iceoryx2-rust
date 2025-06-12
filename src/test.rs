@@ -2,6 +2,7 @@
 
 use super::*;
 use bytes::Bytes;
+use std::sync::Arc;
 
 use protobuf::MessageField;  // if you use this in tests
 
@@ -95,7 +96,7 @@ async fn test_send_empty_payload() {
     assert!(result.is_ok() || result.is_err());
 }
 
-//sending without a payload 
+//sending without a payload  - works
 #[tokio::test]
 async fn test_send_no_payload() {
     let transport = Iceoryx2Transport::new().unwrap();
@@ -107,7 +108,7 @@ async fn test_send_no_payload() {
     assert!(result.is_err(), "Expected error when sending without payload");
 }
 
-//sending a max_sized payload - 
+//sending a max_sized payload - works
 #[tokio::test]
 async fn test_send_large_payload() {
     let transport = Iceoryx2Transport::new().unwrap();
@@ -123,6 +124,33 @@ async fn test_send_large_payload() {
     assert!(result.is_ok() || result.is_err()); // depends on your transport's buffer limit
 }
 
+//sending multiple concurrent messages - works
+#[tokio::test]
+async fn test_concurrent_sends() {
+    let transport = Iceoryx2Transport::new().unwrap();
+    let transport = Arc::new(transport);
+
+    let mut handles = vec![];
+
+    for i in 0..10 {
+        let transport_clone = Arc::clone(&transport);
+        handles.push(tokio::spawn(async move {
+            let data = TransmissionData {
+                x: i,
+                y: i * 2,
+                funky: i as f64 * 1.1,
+            };
+            let mut msg = UMessage::new();
+            msg.payload = Some(Bytes::from(data.to_bytes()));
+            transport_clone.send(msg).await
+        }));
+    }
+
+    for handle in handles {
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+}
 
 
 
