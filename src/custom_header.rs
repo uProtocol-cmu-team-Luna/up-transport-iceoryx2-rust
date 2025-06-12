@@ -26,8 +26,8 @@ impl CustomHeader {
 // Assuming UAttributes has a field called `fields` which is Vec<(String, String)>
 // Adjust if your actual UAttributes is different
 impl From<&CustomHeader> for UAttributes {
-    fn from(header: &CustomHeader) -> UAttributes {
-        let mut attrs = UAttributes::default();
+    fn from(_header: &CustomHeader) -> UAttributes {
+        let attrs = UAttributes::default();
         
         // Hypothetical code: add key-value pairs to attrs
         // Replace this with your real API to insert attributes

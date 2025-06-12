@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use up_rust::{UListener, UMessage, UStatus, UTransport, UUri, UCode, UAttributes};
 use iceoryx2::prelude::*;
-use protobuf::MessageField;
 
 mod custom_header;
 mod transmission_data;
@@ -176,35 +175,4 @@ impl UTransport for Iceoryx2Transport {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_transport_creation() {
-        match Iceoryx2Transport::new() {
-            Ok(_transport) => println!("Transport created successfully"),
-            Err(e) => println!("Transport creation failed (expected if daemon not running): {:?}", e),
-        }
-    }
-    
-    #[tokio::test]
-    async fn test_send_message() {
-        if let Ok(transport) = Iceoryx2Transport::new() {
-            let uprotocol_header = CustomHeader {
-                version: 1,
-                timestamp: 123456789,
-            };
-
-            let message = UMessage {
-                attributes: MessageField::some(UAttributes::from(&uprotocol_header)),
-                payload: Some(vec![1, 2, 3, 4].into()),
-                ..Default::default()
-            };
-
-            match transport.send(message).await {
-                Ok(_) => println!("Message sent successfully"),
-                Err(e) => println!("Send failed (expected without daemon): {:?}", e),
-            }
-        }
-    }
-}
+mod test;
