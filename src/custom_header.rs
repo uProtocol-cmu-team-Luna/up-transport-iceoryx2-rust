@@ -40,3 +40,15 @@ impl From<&CustomHeader> for UAttributes {
         attrs
     }
 }
+
+#[cfg(test)]
+mod tests{
+use super::*;
+#[test]
+fn test_custom_header_from_user_header() {
+    let header = CustomHeader { version: 2, timestamp: 1000 };
+    let new_header = CustomHeader::from_user_header(&header).unwrap();
+    assert_eq!(new_header.version, 2);
+    assert_eq!(new_header.timestamp, 1000);
+}
+}
