@@ -1,14 +1,17 @@
 use async_trait::async_trait;
+use up_rust::UAttributes;
 use std::sync::Arc;
-use up_rust::{UListener, UMessage, UStatus, UTransport, UUri, UCode, UAttributes};
+use up_rust::{UListener, UMessage, UStatus, UTransport, UUri, UCode};
 use iceoryx2::prelude::*;
 
 mod custom_header;
 mod transmission_data;
 pub use custom_header::CustomHeader;
-pub use transmission_data::TransmissionData;
+pub use transmission_data::TransmissionData; 
 
 use std::thread;
+use std::pin::Pin;
+use std::future::Future;
 
 #[derive(Debug)]
 enum TransportCommand {
@@ -99,7 +102,7 @@ impl Iceoryx2Transport {
     ) -> Result<(), UStatus> {
         let transmission_data = TransmissionData::from_message(&message)?;
         
-        let header = CustomHeader::from_message(&message)?;
+        let _header = CustomHeader::from_message(&message)?;
         
         // Loan sample and write payload
         let sample = publisher.loan_uninit()
@@ -114,53 +117,68 @@ impl Iceoryx2Transport {
     }
 }
 
-async fn register_listener(
-    &segilf,
-    source_filter: &UUri,
-    sink_filter: Option<&UUri>,
-    _listener: Arc<dyn UListener>,
-) -> Result<(), UStatus> {
-    let (tx, rx) = std::sync::mpsc::channel();
+#[async_trait]
+impl UTransport for Iceoryx2Transport {
+    async fn send(&self, message: UMessage) -> Result<(), UStatus> {
+        let (tx, rx) = std::sync::mpsc::channel();
 
-    let command = TransportCommand::RegisterListener {
-        source_filter: source_filter.clone(),
-        sink_filter: sink_filter.cloned(),
-        response: tx,
-    };
+        let command = TransportCommand::Send {
+            message,
+            response: tx,
+        };
 
-    self.command_sender.send(command)
-        .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
+        self.command_sender.send(command)
+            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
 
-    let status: Result<(), UStatus> = rx.recv()
-        .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?;
+        // Flatten nested Result<Result<(), UStatus>, _> to Result<(), UStatus>
+        rx.recv()
+            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?
+    }
 
-    status  // just return the Result<(), UStatus> you got here
+    async fn register_listener(
+        &self,
+        source_filter: &UUri,
+        sink_filter: Option<&UUri>,
+        listener: Arc<dyn UListener>,
+    ) -> Result<(), UStatus> {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let command = TransportCommand::RegisterListener {
+            source_filter: source_filter.clone(),
+            sink_filter: sink_filter.cloned(),
+            response: tx,
+        };
+
+        self.command_sender.send(command)
+            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
+
+        // Flatten nested Result<Result<(), UStatus>, _> to Result<(), UStatus>
+        rx.recv()
+            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?
+    }
+
+    async fn unregister_listener(
+        &self,
+        source_filter: &UUri,
+        sink_filter: Option<&UUri>,
+        listener: Arc<dyn UListener>,
+    ) -> Result<(), UStatus> {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let command = TransportCommand::UnregisterListener {
+            source_filter: source_filter.clone(),
+            sink_filter: sink_filter.cloned(),
+            response: tx,
+        };
+
+        self.command_sender.send(command)
+            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
+
+        // Flatten nested Result<Result<(), UStatus>, _> to Result<(), UStatus>
+        rx.recv()
+            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?
+    }
 }
-
-async fn unregister_listener(
-    &self,
-    source_filter: &UUri,
-    sink_filter: Option<&UUri>,
-    _listener: Arc<dyn UListener>,
-) -> Result<(), UStatus> {
-    let (tx, rx) = std::sync::mpsc::channel();
-
-    let command = TransportCommand::UnregisterListener {
-        source_filter: source_filter.clone(),
-        sink_filter: sink_filter.cloned(),
-        response: tx,
-    };
-
-    self.command_sender.send(command)
-        .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
-
-    let status: Result<(), UStatus> = rx.recv()
-        .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?;
-
-    status  // return the result directly
-}
-
-
 
 #[cfg(test)]
 mod test;
