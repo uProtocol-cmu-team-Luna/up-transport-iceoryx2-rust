@@ -1,6 +1,7 @@
 use super::*;
 use bytes::Bytes;
 use std::sync::Arc;
+use up_rust::{UMessageBuilder, UPayloadFormat, UUri};
 
 use protobuf::MessageField;  // if you use this in tests
 
@@ -66,8 +67,14 @@ async fn test_multiple_sends() {
         let bytes = data.to_bytes();
 
         // wrap in umessage and send
-        let mut msg = UMessage::new();
-        msg.payload = Some(bytes.into());
+        let authority = format!("sensor{}", i);
+        let uri = UUri::try_from_parts(&authority, 0xA100, 0x01, 0x8001)
+            .unwrap_or_else(|e| panic!("Failed to construct URI for '{}': {:?}", authority, e));
+
+
+        let msg = UMessageBuilder::publish(uri)
+            .build_with_payload(data.to_bytes(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+            .unwrap();
 
         let result = transport.send(msg).await;
 
@@ -138,8 +145,16 @@ async fn test_concurrent_sends() {
                 y: i * 2,
                 funky: i as f64 * 1.1,
             };
-            let mut msg = UMessage::new();
-            msg.payload = Some(Bytes::from(data.to_bytes()));
+        
+            let authority = format!("vehicle{}", i);
+            let uri = UUri::try_from_parts(&authority, 0xA100, 0x01, 0x8001)
+                .unwrap_or_else(|e| panic!("Failed to construct URI for '{}': {:?}", authority, e));
+
+
+            let msg = UMessageBuilder::publish(uri)
+                .build_with_payload(data.to_bytes(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+                .unwrap();
+            
             transport_clone.send(msg).await
         }));
     }

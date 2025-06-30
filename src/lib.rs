@@ -1,23 +1,24 @@
 use async_trait::async_trait;
-use up_rust::UAttributes;
-use std::sync::Arc;
-use up_rust::{UListener, UMessage, UStatus, UTransport, UUri, UCode};
 use iceoryx2::prelude::*;
+use std::sync::Arc;
+use up_rust::UAttributes;
+use up_rust::{UCode, UListener, UMessage, UStatus, UTransport, UUri};
 
 mod custom_header;
 mod transmission_data;
 pub use custom_header::CustomHeader;
-pub use transmission_data::TransmissionData; 
+pub use transmission_data::TransmissionData;
 
-use std::thread;
-use std::pin::Pin;
+use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
+use std::thread;
 
 #[derive(Debug)]
 enum TransportCommand {
-    Send { 
-        message: UMessage, 
-        response: std::sync::mpsc::Sender<Result<(), UStatus>> 
+    Send {
+        message: UMessage,
+        response: std::sync::mpsc::Sender<Result<(), UStatus>>,
     },
     RegisterListener {
         source_filter: UUri,
@@ -38,16 +39,43 @@ pub struct Iceoryx2Transport {
 impl Iceoryx2Transport {
     pub fn new() -> Result<Self, UStatus> {
         let (tx, rx) = std::sync::mpsc::channel();
-        
+
         thread::spawn(move || {
             Self::background_task(rx);
         });
-        
-        Ok(Self {
-            command_sender: tx,
-        })
+
+        Ok(Self { command_sender: tx })
     }
+
+    fn compute_service_name(message: &UMessage) -> Result<String, UStatus> {
+        let encode_uri = |uuri: &UUri| Ok::<String, UStatus>(uuri.to_string());
     
+        if message.is_publish() {
+            let source = message
+                .source()
+                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing source URI"))?;
+            Ok(format!("up/{}", encode_uri(source)?))
+        } else if message.is_request() {
+            let sink = message
+                .sink()
+                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing sink URI"))?;
+            Ok(format!("up/{}", encode_uri(sink)?))
+        } else if message.is_response() || message.is_notification() {
+            let source = message
+                .source()
+                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing source URI"))?;
+            let sink = message
+                .sink()
+                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing sink URI"))?;
+            Ok(format!("up/{}/{}", encode_uri(source)?, encode_uri(sink)?))
+        } else {
+            Err(UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                "Unsupported UMessageType",
+            ))
+        }
+    }     
+
     fn background_task(rx: std::sync::mpsc::Receiver<TransportCommand>) {
         let node = match NodeBuilder::new().create::<ipc::Service>() {
             Ok(node) => node,
@@ -56,65 +84,68 @@ impl Iceoryx2Transport {
                 return;
             }
         };
-
-        let service = match node
-            .service_builder(&"My/Funk/ServiceName".try_into().unwrap())
-            .publish_subscribe::<TransmissionData>()
-            .user_header::<CustomHeader>()
-            .open_or_create()
-        {
-            Ok(service) => service,
-            Err(e) => {
-                eprintln!("Failed to create iceoryx2 service: {}", e);
-                return;
-            }
-        };
-
-        let publisher = match service.publisher_builder().create() {
-            Ok(publisher) => publisher,
-            Err(e) => {
-                eprintln!("Failed to create iceoryx2 publisher: {}", e);
-                return;
-            }
-        };
-        
+    
+        let mut publishers: HashMap<
+            String,
+            iceoryx2::port::publisher::Publisher<ipc::Service, TransmissionData, CustomHeader>,
+        > = HashMap::new();
+    
         while let Ok(command) = rx.recv() {
             match command {
                 TransportCommand::Send { message, response } => {
-                    let result = Self::handle_send(&publisher, message);
+                    let service_name = match Self::compute_service_name(&message) {
+                        Ok(name) => name,
+                        Err(e) => {
+                            let _ = response.send(Err(e));
+                            continue;
+                        }
+                    };
+    
+                    let publisher = publishers.entry(service_name.clone()).or_insert_with(|| {
+                        let service = node
+                            .service_builder(&service_name.as_str().try_into().unwrap())
+                            .publish_subscribe::<TransmissionData>()
+                            .user_header::<CustomHeader>()
+                            .open_or_create()
+                            .expect("Failed to create service");
+    
+                        service
+                            .publisher_builder()
+                            .create()
+                            .expect("Failed to create publisher")
+                    });
+    
+                    let result = Self::handle_send(publisher, message);
                     let _ = response.send(result);
                 }
                 TransportCommand::RegisterListener { response, .. } => {
-                    // TODO: Implement listener registration
-                    let _ = response.send(Ok(()));
+                    let _ = response.send(Ok(())); // TODO
                 }
                 TransportCommand::UnregisterListener { response, .. } => {
-                    // TODO: Implement listener unregistration  
-                    let _ = response.send(Ok(()));
+                    let _ = response.send(Ok(())); // TODO
                 }
             }
         }
-    }
-    
+    }  
+
     fn handle_send(
         publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, TransmissionData, CustomHeader>,
         message: UMessage
     ) -> Result<(), UStatus> {
         let transmission_data = TransmissionData::from_message(&message)?;
-        
-        let _header = CustomHeader::from_message(&message)?;
-        
-        // Loan sample and write payload
+        let header = CustomHeader::from_message(&message)?;
+    
         let sample = publisher.loan_uninit()
             .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to loan sample: {e}")))?;
-        
-        let sample_final = sample.write_payload(transmission_data);
-
+    
+        let mut sample_final = sample.write_payload(transmission_data);
+        *sample_final.user_header_mut() = header;
+    
         sample_final.send()
             .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to send: {e}")))?;
-        
+    
         Ok(())
-    }
+    }    
 }
 
 #[async_trait]
@@ -127,12 +158,13 @@ impl UTransport for Iceoryx2Transport {
             response: tx,
         };
 
-        self.command_sender.send(command)
+        self.command_sender
+            .send(command)
             .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
 
-        // Flatten nested Result<Result<(), UStatus>, _> to Result<(), UStatus>
-        rx.recv()
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?
+        rx.recv().map_err(|_| {
+            UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed")
+        })?
     }
 
     async fn register_listener(
@@ -149,12 +181,13 @@ impl UTransport for Iceoryx2Transport {
             response: tx,
         };
 
-        self.command_sender.send(command)
+        self.command_sender
+            .send(command)
             .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
 
-        // Flatten nested Result<Result<(), UStatus>, _> to Result<(), UStatus>
-        rx.recv()
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?
+        rx.recv().map_err(|_| {
+            UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed")
+        })?
     }
 
     async fn unregister_listener(
@@ -171,12 +204,13 @@ impl UTransport for Iceoryx2Transport {
             response: tx,
         };
 
-        self.command_sender.send(command)
+        self.command_sender
+            .send(command)
             .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
 
-        // Flatten nested Result<Result<(), UStatus>, _> to Result<(), UStatus>
-        rx.recv()
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed"))?
+        rx.recv().map_err(|_| {
+            UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed")
+        })?
     }
 }
 
