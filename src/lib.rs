@@ -49,16 +49,18 @@ impl Iceoryx2Transport {
 
     fn encode_uuri_segments(uuri: &UUri) -> Vec<String> {
         vec![
-            uuri.authority_name.clone(), // assumes already correct
-            Self::encode_hex_no_leading_zeros(uuri.ue_id),
-            Self::encode_hex_no_leading_zeros(uuri.ue_version_major),
-            Self::encode_hex_no_leading_zeros(uuri.resource_id),
+            uuri.authority_name.clone(), // e.g., "device1"
+            Self::encode_hex_no_leading_zeros(uuri.uentity_type_id() as u32),
+            Self::encode_hex_no_leading_zeros(uuri.uentity_instance_id() as u32),
+            Self::encode_hex_no_leading_zeros(uuri.uentity_major_version() as u32),
+            Self::encode_hex_no_leading_zeros(uuri.resource_id() as u32),
         ]
     }
+    
     fn encode_hex_no_leading_zeros(value: u32) -> String {
         format!("{:X}", value)
-    }    
-
+    }
+    
     // returns a correct iceoryx2 service name based on the UMessage type
     // and its source/sink URIs.
     fn compute_service_name(message: &UMessage) -> Result<String, UStatus> {
@@ -97,7 +99,7 @@ impl Iceoryx2Transport {
                 "Unsupported UMessageType",
             ))
         }
-    }        
+    }           
 
     fn background_task(rx: std::sync::mpsc::Receiver<TransportCommand>) {
         let node = match NodeBuilder::new().create::<ipc::Service>() {
