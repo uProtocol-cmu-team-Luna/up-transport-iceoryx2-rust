@@ -47,34 +47,57 @@ impl Iceoryx2Transport {
         Ok(Self { command_sender: tx })
     }
 
+    fn encode_uuri_segments(uuri: &UUri) -> Vec<String> {
+        vec![
+            uuri.authority_name.clone(), // assumes already correct
+            Self::encode_hex_no_leading_zeros(uuri.ue_id),
+            Self::encode_hex_no_leading_zeros(uuri.ue_version_major),
+            Self::encode_hex_no_leading_zeros(uuri.resource_id),
+        ]
+    }
+    fn encode_hex_no_leading_zeros(value: u32) -> String {
+        format!("{:X}", value)
+    }    
+
+    // returns a correct iceoryx2 service name based on the UMessage type
+    // and its source/sink URIs.
     fn compute_service_name(message: &UMessage) -> Result<String, UStatus> {
-        let encode_uri = |uuri: &UUri| Ok::<String, UStatus>(uuri.to_string());
+        let join_segments = |segments: Vec<String>| segments.join("/");
     
         if message.is_publish() {
-            let source = message
-                .source()
-                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing source URI"))?;
-            Ok(format!("up/{}", encode_uri(source)?))
+            let source = message.source().ok_or_else(|| {
+                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing source URI")
+            })?;
+            let segments = Self::encode_uuri_segments(source);
+            Ok(format!("up/{}", join_segments(segments)))
         } else if message.is_request() {
-            let sink = message
-                .sink()
-                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing sink URI"))?;
-            Ok(format!("up/{}", encode_uri(sink)?))
+            let sink = message.sink().ok_or_else(|| {
+                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing sink URI")
+            })?;
+            let segments = Self::encode_uuri_segments(sink);
+            Ok(format!("up/{}", join_segments(segments)))
         } else if message.is_response() || message.is_notification() {
-            let source = message
-                .source()
-                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing source URI"))?;
-            let sink = message
-                .sink()
-                .ok_or_else(|| UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing sink URI"))?;
-            Ok(format!("up/{}/{}", encode_uri(source)?, encode_uri(sink)?))
+            let source = message.source().ok_or_else(|| {
+                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing source URI")
+            })?;
+            let sink = message.sink().ok_or_else(|| {
+                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, "Missing sink URI")
+            })?;
+    
+            let source_segments = Self::encode_uuri_segments(source);
+            let sink_segments = Self::encode_uuri_segments(sink);
+            Ok(format!(
+                "up/{}/{}",
+                join_segments(source_segments),
+                join_segments(sink_segments)
+            ))
         } else {
             Err(UStatus::fail_with_code(
                 UCode::INVALID_ARGUMENT,
                 "Unsupported UMessageType",
             ))
         }
-    }     
+    }        
 
     fn background_task(rx: std::sync::mpsc::Receiver<TransportCommand>) {
         let node = match NodeBuilder::new().create::<ipc::Service>() {
