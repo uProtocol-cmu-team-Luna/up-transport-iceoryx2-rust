@@ -239,5 +239,97 @@ impl UTransport for Iceoryx2Transport {
     }
 }
 
+fn test_uri(authority: &str, instance: u16, typ: u16, version: u8, resource: u16) -> UUri {
+    let entity_id = ((instance as u32) << 16) | (typ as u32);
+    UUri::try_from_parts(authority, entity_id, version, resource).unwrap()
+}
+
 #[cfg(test)]
-mod test;
+mod tests {
+    use super::*;
+    use up_rust::{UPayloadFormat, UStatus, UMessageBuilder};
+
+    use up_rust::UUID;
+    use std::convert::TryFrom;
+
+    // fn dummy_uuid() -> up_rust::UUID {
+    //     // let uuid = UUID::new();
+    //     let uuid = up_rust::UUID::new(); 
+    //     up_rust::UUID::try_from(uuid).expect("Valid UUID conversion")
+    // }
+    fn dummy_uuid() -> up_rust::UUID {
+        up_rust::UUID::build()
+    }    
+   
+    // Helper function to create a test URI
+    fn test_uri(authority: &str, instance: u16, typ: u16, version: u8, resource: u16) -> UUri {
+        let entity_id = ((instance as u32) << 16) | (typ as u32);
+        UUri::try_from_parts(authority, entity_id, version, resource).unwrap()
+    }
+
+    #[test]
+    fn test_publish_service_name() {
+        let source = test_uri("device1", 0x0000, 0x10AB, 0x03, 0x80CD);
+        let message = UMessageBuilder::publish(source.clone())
+            .build_with_payload(vec![], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+            .unwrap();
+
+        let name = Iceoryx2Transport::compute_service_name(&message).unwrap();
+        assert_eq!(name, "up/device1/10AB/0/3/80CD");
+    }
+
+    #[test]
+    fn test_notification_service_name() {
+        let source = test_uri("device1", 0x0000, 0x10AB, 0x03, 0x80CD);
+        let sink = test_uri("device1", 0x0000, 0x30EF, 0x04, 0x0000);
+        let message = UMessageBuilder::notification(source.clone(), sink.clone())
+            .build_with_payload(vec![], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+            .unwrap();
+
+        let name = Iceoryx2Transport::compute_service_name(&message).unwrap();
+        assert_eq!(name, "up/device1/10AB/0/3/80CD/device1/30EF/0/4/0");
+    }
+
+    #[test]
+    fn test_rpc_request_service_name() {
+        let sink = test_uri("device1", 0x0000, 0x00CD, 0x04, 0x000B);
+        let reply_to = test_uri("device1", 0x0000, 0x0001, 0x01, 0x0000); // Dummy reply URI
+
+        let message = UMessageBuilder::request(sink.clone(), reply_to, 1000)
+            .build_with_payload(vec![], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+            .unwrap();
+
+        let name = Iceoryx2Transport::compute_service_name(&message).unwrap();
+        assert_eq!(name, "up/device1/CD/0/4/B");
+    }
+
+
+    #[test]
+    fn test_rpc_response_service_name() {
+        let source = test_uri("device1", 0x0001, 0x0020, 0x01, 0x0000);
+        let sink = test_uri("device1", 0x0001, 0x00CD, 0x04, 0x1000);
+        let uuid = dummy_uuid();
+
+        let message = UMessageBuilder::response(source.clone(), uuid, sink.clone())
+            .build_with_payload(vec![], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+            .unwrap();
+
+        let name = Iceoryx2Transport::compute_service_name(&message).unwrap();
+
+        assert_eq!(
+            name,
+            "up/device1/CD/1/4/1000/device1/20/1/1/0"
+        );
+    }
+
+
+
+    #[test]
+    fn test_missing_uri_error() {
+        let message = UMessage::new(); // no source or sink
+        let result = Iceoryx2Transport::compute_service_name(&message);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().get_code(), UCode::INVALID_ARGUMENT);
+    }
+}
