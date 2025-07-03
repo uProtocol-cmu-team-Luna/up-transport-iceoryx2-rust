@@ -11,8 +11,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use iceoryx2::prelude::*;
-use up_rust::{UMessage, UStatus, UCode};
-use bytes::Bytes;
+use up_rust::{UCode, UMessage, UStatus};
 
 #[derive(Debug, Clone, Copy, ZeroCopySend, Default)]
 // optional type name; if not set, `core::any::type_name::<TransmissionData>()` is used
@@ -44,7 +43,6 @@ impl TransmissionData {
         }
         Ok(data)
     }
-
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![0u8; std::mem::size_of::<Self>()];

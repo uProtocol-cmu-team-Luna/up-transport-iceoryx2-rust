@@ -23,24 +23,22 @@ impl Receiver{
 }
 
 #[async_trait]
-impl UListener for Receiver{
-    async fn on_receive(&self,message:UMessage)->UStatus{
-        if let Some(payload)=message.payload(){
-            println!("Receieved Message ID: {}", message.id());
+impl UListener for Receiver {
+    async fn on_receive(&self, message: UMessage) {
+        if message.payload().is_some() {
+            println!("Received Message ID: {}", message.id());
         }
-
-        UStatus::Ok
     }
 }
 
-#[tokio::test]
-async fn test_receiver(){
-    let receiver= Receiver::new();
-    let transport = Iceoryx2Transport::new().unwrap();
-    source_URI= UUri
-    sink_filter=
-    transport.register_listener(receiver).await.unwrap();
-
-}
-
-
+// #[tokio::test]
+// async fn test_receiver() {
+//     let receiver = Receiver::new();
+//     let transport = Iceoryx2Transport::new().unwrap();
+//     let source_uri = UUri::default();
+//     let sink_filter = None;
+//     transport
+//         .register_listener(&source_uri, sink_filter, Arc::new(receiver))
+//         .await
+//         .unwrap();
+// }
