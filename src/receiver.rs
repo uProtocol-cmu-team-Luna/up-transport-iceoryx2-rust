@@ -15,6 +15,16 @@ use std::str::FromStr;
 use iceoryx2::prelude::*;
 use env_logger;
 
+use std::sync::Once;
+
+static INIT_LOGGER: Once = Once::new();
+
+fn init_logger() {
+    INIT_LOGGER.call_once(|| {
+        env_logger::init();
+    });
+}
+
 
 
 const MESSAGE_DATA: &str = "Hello World!";
@@ -48,7 +58,7 @@ async fn register_listener_and_send(
     source_filter: &UUri,
     sink_filter: Option<&UUri>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    init_logger();
     let source_uri= UUri::try_from_parts(authority, 0xABC, 1, 0)?;
     let transport = Iceoryx2Transport::new().unwrap();
     let notify = Arc::new(Notify::new());
