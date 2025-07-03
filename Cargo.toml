@@ -10,6 +10,9 @@ async-trait = "0.1"
 protobuf = "3.7.2"
 bytes = "1.10.1"
 tokio = { version = "1", features = ["full"] }
+test-case = "3"
+log = "0.4.27"
+env_logger = "0.11.8"
 
 [dev-dependencies]
 up-rust = { version = "0.5.0", features = ["test-util"] }

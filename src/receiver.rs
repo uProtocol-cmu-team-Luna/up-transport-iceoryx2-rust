@@ -1,13 +1,21 @@
 use super::*;
-use bytes::Bytes;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use up_rust::UAttributes;
-use std::sync::Arc;
-use up_rust::{UListener, UMessage, UStatus, UTransport, UUri, UCode};
+use bytes::Bytes;
+use tokio::sync::Notify;
+use log::info;
+
+use up_rust::{
+    UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
+    UStatus, UTransport, UUri,
+};
+use std::str::FromStr;
 use iceoryx2::prelude::*;
-use tokio::sync::mpsc::UnboundedSender;
+use env_logger;
+
+
 
 const MESSAGE_DATA: &str = "Hello World!";
 
@@ -25,14 +33,12 @@ impl Receiver{
 
 #[async_trait]
 impl UListener for Receiver{
-    async fn on_receive(&self,message:UMessage)->UStatus{
-        if let Some(payload)=message.payload(){
-            println!("Receieved Message ID: {}", message.id());
+    async fn on_receive(&self,message:UMessage)->(){
+        if let Some(payload)=&message.payload{
+            println!("Receieved Message ID: {:#?}", message.id());
             assert_eq!(self.expected, message);
             self.notify.notify_one();
         }
-
-        UStatus::Ok
     }
 }
 
@@ -42,6 +48,7 @@ async fn register_listener_and_send(
     source_filter: &UUri,
     sink_filter: Option<&UUri>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let source_uri= UUri::try_from_parts(authority, 0xABC, 1, 0)?;
     let transport = Iceoryx2Transport::new().unwrap();
     let notify = Arc::new(Notify::new());
