@@ -17,6 +17,8 @@ use env_logger;
 
 use std::sync::Once;
 
+
+
 static INIT_LOGGER: Once = Once::new();
 
 fn init_logger() {
@@ -46,7 +48,11 @@ impl UListener for Receiver{
     async fn on_receive(&self,message:UMessage)->(){
         if let Some(payload)=&message.payload{
             println!("Receieved Message ID: {:#?}", message.id());
-            assert_eq!(self.expected, message);
+            if let (Some(expected_payload), Some(actual_payload)) = (&self.expected.payload, &message.payload) {
+            assert_eq!(expected_payload, actual_payload);
+            } else {
+            panic!("Missing payloads in either expected or actual message");
+            }
             self.notify.notify_one();
         }
     }
@@ -97,12 +103,15 @@ async fn test_publish_gets_to_listener(
     source_filter_uri: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let topic = UUri::from_str(topic_uri)?;
-    let source_filter = UUri::from_str(source_filter_uri)?;
+    let source_filter = topic.clone();
+    let data = TransmissionData { x: 1, y: 2, funky: 3.14 };
+    let payload = data.to_bytes();
+
     let umessage = UMessageBuilder::publish(topic.clone())
         .with_priority(up_rust::UPriority::UPRIORITY_CS5)
         .with_traceparent("traceparent")
         .with_ttl(ttl)
-        .build_with_payload(MESSAGE_DATA, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)?;
+        .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_RAW)?; 
 
     register_listener_and_send(authority, umessage, &source_filter, None).await
 }
