@@ -1,39 +1,37 @@
+use up_rust::{UMessageBuilder, UPayloadFormat, UUri};
+use env_logger;
+use std::sync::Once;
+use std::str::FromStr;
 use up_transport_iceoryx2_rust::{Iceoryx2Transport, TransmissionData};
-use up_rust::{UTransport, UMessageBuilder, UPayloadFormat, UUri};
+use up_rust::UTransport;
+
+
+static INIT_LOGGER: Once = Once::new();
+
+fn init_logger() {
+    INIT_LOGGER.call_once(|| {
+        env_logger::init();
+    });
+}
 
 #[tokio::main]
-async fn main() {
-    println!("Starting sender application...");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_logger();
 
-    let transport = match Iceoryx2Transport::new() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to create transport: {:?}", e);
-            return;
-        }
-    };
+    let topic = UUri::from_str("//vehicle_shared/10A10B/1/CA5D")?;
+    let transport = Iceoryx2Transport::new().unwrap();
 
-    // Define a topic URI to publish to
-    let source_uri = UUri::try_from_parts("vehicle", 0x1000, 1, 0x8001).unwrap();
+    loop {
+        let data = TransmissionData { x: 1, y: 2, funky: 3.14 };
+        let payload = data.to_bytes();
 
-    // Create a sample payload
-    let data = TransmissionData {
-        x: 123,
-        y: 456,
-        funky: 9.87,
-    };
-    let payload_bytes = data.to_bytes();
+        let umessage = UMessageBuilder::publish(topic.clone())
+            .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
 
-    // Build the UMessage
-    let msg = UMessageBuilder::publish(source_uri.clone())
-        .build_with_payload(payload_bytes, UPayloadFormat::UPAYLOAD_FORMAT_RAW)
-        .expect("Failed to build message");
+        transport.send(umessage).await?;
 
-    println!("Sending message to URI: {}", source_uri);
+        println!("Message sent.");
 
-    // Send the message
-    match transport.send(msg).await {
-        Ok(_) => println!("Message sent successfully!"),
-        Err(e) => eprintln!("Failed to send message: {:?}", e),
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
