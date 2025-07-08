@@ -8,7 +8,7 @@ use tokio::sync::Notify;
 use log::info;
 
 use up_rust::{
-    UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
+    UAttributes, MockUListener, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
     UStatus, UTransport, UUri,
 };
 use std::str::FromStr;
@@ -106,4 +106,21 @@ async fn test_publish_gets_to_listener(
         .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
 
     register_listener_and_send(authority, umessage, &source_filter, None).await
+}
+
+
+#[tokio::test]
+async fn test_mock_listener() {
+    let mut listener = MockUListener::new();
+
+    // Set expectation: simply print and return ()
+    listener
+        .expect_on_receive()
+        .returning(|_message| {
+            println!("Mock listener called!");
+        });
+
+    let message = UMessage::new();
+
+    listener.on_receive(message).await;
 }
