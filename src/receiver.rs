@@ -8,7 +8,7 @@ use tokio::sync::Notify;
 use log::info;
 
 use up_rust::{
-    UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
+    MockUListener,UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
     UStatus, UTransport, UUri,
 };
 use std::str::FromStr;
@@ -107,3 +107,49 @@ async fn test_publish_gets_to_listener(
 
     register_listener_and_send(authority, umessage, &source_filter, None).await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unregister_listener_stops_processing_of_messages() {
+    let transport =  Iceoryx2Transport::new().unwrap();
+    let message_received = Arc::new(Notify::new());
+    let message_received_barrier = message_received.clone();
+    let mut listener = MockUListener::new();
+    listener.expect_on_receive().returning(move |_msg| {
+        message_received.notify_one();
+    });
+
+    let listener_to_register = Arc::new(listener);
+    let msg =
+        UMessageBuilder::publish(UUri::from_str("//vehicle/123/1/9000").expect("invalid topic"))
+            .build()
+            .expect("failed to create message");
+
+    // [utest->dsn~utransport-registerlistener-start-invoking-listeners~1]
+    assert!(transport
+        .register_listener(&UUri::any(), None, listener_to_register.clone())
+        .await
+        .is_ok());
+
+    // first message is expected to be processed by listener
+    assert!(transport.send(msg.clone()).await.is_ok());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), message_received_barrier.notified())
+            .await
+            .is_ok()
+    );
+
+    // [utest->dsn~utransport-unregisterlistener-stop-invoking-listeners~1]
+    // after unregistering the listener,
+    assert!(transport
+        .unregister_listener(&UUri::any(), None, listener_to_register)
+        .await
+        .is_ok());
+    //  no further messages should be processed
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), message_received_barrier.notified())
+            .await
+            .is_err(),
+        "Expected no further messages to be processed after unregistering the listener"
+    );
+}
+
