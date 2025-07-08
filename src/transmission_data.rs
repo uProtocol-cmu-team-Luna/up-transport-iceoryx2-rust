@@ -10,6 +10,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+
+/*
 use iceoryx2::prelude::*;
 use up_rust::{UCode, UMessage, UStatus};
 
@@ -58,3 +60,5 @@ impl TransmissionData {
         Self::from_bytes(payload.to_vec())
     }
 }
+
+*/
