@@ -413,11 +413,10 @@ mod receiver;
 
 #[cfg(test)]
 mod tests {
-    // (keep your tests unchanged, they're correct!)
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-    use up_rust::{UMessageBuilder, UPayloadFormat};
+    use up_rust::{UMessageBuilder, MockUListener, UPayloadFormat};
 
     fn dummy_uuid() -> up_rust::UUID {
         up_rust::UUID::build()
@@ -485,4 +484,111 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().get_code(), UCode::INVALID_ARGUMENT);
     }
+
+    #[tokio::test]
+    async fn test_send_message() {
+        let transport = Iceoryx2Transport::new().unwrap();
+
+        let source = test_uri("device1", 0x0000, 0x1234, 0x01, 0x8000);
+        let msg = UMessageBuilder::publish(source)
+            .build_with_payload(vec![1, 2, 3], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+            .unwrap();
+
+        let res = transport.send(msg).await;
+        assert!(res.is_ok(), "send() returned error: {:?}", res);
+    }
+
+    #[tokio::test]
+async fn test_register_listener_with_mockUListener() {
+    let transport = Iceoryx2Transport::new().unwrap();
+
+    let mut listener = MockUListener::new();
+
+    listener
+        .expect_on_receive()
+        .returning(|msg| {
+            println!("Mock listener called with payload: {:?}", msg.payload);
+        });
+
+    let topic = test_uri("deviceX", 0x0000, 0x1234, 0x01, 0x8000);
+
+    transport
+        .register_listener(&topic, None, Arc::new(listener))
+        .await
+        .unwrap();
+
+    let msg = UMessageBuilder::publish(topic.clone())
+        .build_with_payload(b"hello".to_vec(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+        .unwrap();
+
+    transport.send(msg).await.unwrap();
+
+    // Sleep briefly to let the background task run.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
+
+#[tokio::test]
+async fn test_unregister_listener_with_mock() {
+    let transport = Iceoryx2Transport::new().unwrap();
+
+    // Create the mock listener
+    let mut listener = MockUListener::new();
+
+    // Track how many times on_receive is called
+    let call_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter_clone = call_counter.clone();
+
+    listener
+        .expect_on_receive()
+        .returning(move |_msg| {
+            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+    let listener_arc = Arc::new(listener);
+
+    let topic = test_uri("deviceB", 0x0000, 0x2222, 0x02, 0x8000);
+
+    // Register the listener
+    transport
+        .register_listener(&topic, None, listener_arc.clone())
+        .await
+        .unwrap();
+
+    // Send first message
+    let first = UMessageBuilder::publish(topic.clone())
+        .build_with_payload(b"first".to_vec(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+        .unwrap();
+
+    transport.send(first).await.unwrap();
+
+    // Give time for delivery
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Verify the listener fired once
+    assert_eq!(call_counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Now unregister
+    transport
+        .unregister_listener(&topic, None, listener_arc.clone())
+        .await
+        .unwrap();
+
+    // Send second message
+    let second = UMessageBuilder::publish(topic.clone())
+        .build_with_payload(b"second".to_vec(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)
+        .unwrap();
+
+    transport.send(second).await.unwrap();
+
+    // Wait a bit in case it would fire
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Check that no new calls happened
+    assert_eq!(
+        call_counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Listener should not fire after unregister"
+    );
+}
+
 }
