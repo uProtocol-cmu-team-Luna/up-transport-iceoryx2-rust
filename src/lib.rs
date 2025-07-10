@@ -52,7 +52,7 @@ impl Iceoryx2Transport {
             "wildcard".to_string()
         } else {
             uuri.authority_name.clone()
-        };    
+        };
         vec![
             authority,
             Self::encode_hex_no_leading_zeros(uuri.uentity_type_id() as u32),
@@ -234,11 +234,13 @@ impl Iceoryx2Transport {
                     while let Some(sample) = subscriber.receive().ok().flatten() {
                         if let Some(listeners) = listeners.get(service_name) {
                             for listener in listeners {
+                                let payload_bytes = sample.payload().to_bytes();
+
                                 let mut new_umessage = UMessage::new();
                                 new_umessage.attributes =
                                     MessageField::some(UAttributes::from(sample.user_header()));
-                                new_umessage.payload =
-                                    Some(sample.payload().to_bytes().into());
+                                new_umessage.payload = Some(payload_bytes.into());
+
                                 let listener_clone = listener.clone();
                                 tokio::spawn(async move {
                                     listener_clone.on_receive(new_umessage).await;
@@ -418,7 +420,6 @@ mod receiver;
 
 #[cfg(test)]
 mod tests {
-    // (keep your tests unchanged, they're correct!)
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
