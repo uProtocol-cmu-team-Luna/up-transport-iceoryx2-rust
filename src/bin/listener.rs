@@ -23,13 +23,18 @@ pub struct Receiver {
 impl UListener for Receiver {
     async fn on_receive(&self, message: UMessage) {
         if let Some(payload) = &message.payload {
-            println!("Received payload bytes: {:?}", payload);
+            print!("Received payload bytes (decimal): ");
+            for byte in payload {
+                print!("{} ", byte);
+            }
+            println!();
         } else {
             println!("Received message with no payload.");
         }
         self.notify.notify_one();
     }
 }
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
