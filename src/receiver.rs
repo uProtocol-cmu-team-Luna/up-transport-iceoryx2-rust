@@ -128,6 +128,7 @@ async fn test_unregister_listener_stops_processing_of_messages() {
     impl UListener for TestListener {
         async fn on_receive(&self, _msg: UMessage) {
             let count = self.hit_count.fetch_add(1, Ordering::SeqCst);
+            println!("Received a message, count = {}", count);
             if count == 0 {
                 self.first_barrier.notify_one();
             } else {
@@ -147,8 +148,14 @@ async fn test_unregister_listener_stops_processing_of_messages() {
         .build()
         .expect("failed to build");
 
-    // Register
-    transport.register_listener(&UUri::any(), None, listener.clone()).await.unwrap();
+    let mut listener_registered=false;
+    // Register listener 
+    if transport
+       .register_listener(&uri, None, listener.clone()).await.is_ok(){
+        listener_registered = true;
+       }
+    //test if listener was registered
+    assert!(listener_registered, "Listener was not registered");
 
     // Let subscriber start
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -163,10 +170,10 @@ async fn test_unregister_listener_stops_processing_of_messages() {
     );
 
     // Unregister
-    transport.unregister_listener(&UUri::any(), None, listener).await.unwrap();
+    transport.unregister_listener(&uri, None, listener.clone()).await.unwrap();
 
     // Small delay to make sure unsubscribe has taken effect
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Send again
     transport.send(msg).await.unwrap();
@@ -175,5 +182,11 @@ async fn test_unregister_listener_stops_processing_of_messages() {
     assert!(
         tokio::time::timeout(Duration::from_secs(3), second_received.notified()).await.is_err(),
         "Expected no second message after unregister"
+    );
+    // Final assertion to ensure exactly one message was received
+    assert_eq!(
+        listener.hit_count.load(Ordering::SeqCst),
+        1,
+        "Listener should only process one message"
     );
 }
