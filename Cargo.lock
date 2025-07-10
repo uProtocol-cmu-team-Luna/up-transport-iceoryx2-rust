@@ -1381,6 +1381,7 @@ dependencies = [
  "bytes",
  "env_logger",
  "iceoryx2",
+ "iceoryx2-bb-container",
  "log",
  "once_cell",
  "protobuf",
