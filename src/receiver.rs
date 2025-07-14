@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use log::info;
 
 use up_rust::{
-    UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
+    MockUListener,UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
     UStatus, UTransport, UUri,
 };
 use std::str::FromStr;
@@ -110,6 +110,89 @@ async fn test_publish_gets_to_listener(
         .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
 
     register_listener_and_send(authority, umessage, &source_filter, None).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unregister_listener_stops_processing_of_messages() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let transport = Iceoryx2Transport::new().unwrap();
+
+    let first_received = Arc::new(Notify::new());
+    let second_received = Arc::new(Notify::new());
+
+    struct TestListener {
+        first_barrier: Arc<Notify>,
+        second_barrier: Arc<Notify>,
+        hit_count: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl UListener for TestListener {
+        async fn on_receive(&self, _msg: UMessage) {
+            let count = self.hit_count.fetch_add(1, Ordering::SeqCst);
+            println!("Received a message, count = {}", count);
+            if count == 0 {
+                self.first_barrier.notify_one();
+            } else {
+                self.second_barrier.notify_one();
+            }
+        }
+    }
+
+    let listener = Arc::new(TestListener {
+        first_barrier: first_received.clone(),
+        second_barrier: second_received.clone(),
+        hit_count: AtomicUsize::new(0),
+    });
+
+    let uri = UUri::from_str("//vehicle/123/1/9000").unwrap();
+    let msg = UMessageBuilder::publish(uri.clone())
+        .build()
+        .expect("failed to build");
+
+    let mut listener_registered=false;
+    // Register listener 
+    if transport
+       .register_listener(&uri, None, listener.clone()).await.is_ok(){
+        listener_registered = true;
+       }
+    //test if listener was registered
+    assert!(listener_registered, "Listener was not registered");
+
+    // Let subscriber start
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Send first message
+    transport.send(msg.clone()).await.unwrap();
+
+    // Wait for first message to be received
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), first_received.notified()).await.is_ok(),
+        "Listener did not receive the first message"
+    );
+
+    // Unregister
+    transport.unregister_listener(&uri, None, listener.clone()).await.unwrap();
+
+    // Small delay to make sure unsubscribe has taken effect
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Send again
+    transport.send(msg).await.unwrap();
+
+    // Confirm second message is NOT received
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), second_received.notified()).await.is_err(),
+        "Expected no second message after unregister"
+    );
+    // Final assertion to ensure exactly one message was received
+    assert_eq!(
+        listener.hit_count.load(Ordering::SeqCst),
+        1,
+        "Listener should only process one message"
+    );
 }
 
 #[tokio::test]
