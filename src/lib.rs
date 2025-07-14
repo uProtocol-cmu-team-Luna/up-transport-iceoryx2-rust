@@ -48,13 +48,8 @@ impl Iceoryx2Transport {
     }
 
     fn encode_uuri_segments(uuri: &UUri) -> Vec<String> {
-        let authority = if uuri.authority_name == "*" {
-            "wildcard".to_string()
-        } else {
-            uuri.authority_name.clone()
-        };
         vec![
-            authority,
+            uuri.authority_name.clone(),
             Self::encode_hex_no_leading_zeros(uuri.uentity_type_id() as u32),
             Self::encode_hex_no_leading_zeros(uuri.uentity_instance_id() as u32),
             Self::encode_hex_no_leading_zeros(uuri.uentity_major_version() as u32),
@@ -116,23 +111,13 @@ impl Iceoryx2Transport {
                 Ok(format!("up/{}", join_segments(segments)))
             }
             Some(sink) => {
-                let is_wildcard_entity = source_filter.uentity_type_id() == 0xFFFF
-                    && source_filter.uentity_instance_id() == 0xFFFF;
-                let is_wildcard_version = source_filter.uentity_major_version() == 0xFF;
-                let is_wildcard_resource = source_filter.resource_id() == 0xFFFF;
-
-                if is_wildcard_entity && is_wildcard_version && is_wildcard_resource {
-                    let segments = Self::encode_uuri_segments(sink);
-                    Ok(format!("up/{}", join_segments(segments)))
-                } else {
-                    let source_segments = Self::encode_uuri_segments(source_filter);
-                    let sink_segments = Self::encode_uuri_segments(sink);
-                    Ok(format!(
-                        "up/{}/{}",
-                        join_segments(source_segments),
-                        join_segments(sink_segments)
-                    ))
-                }
+                let source_segments = Self::encode_uuri_segments(source_filter);
+                let sink_segments = Self::encode_uuri_segments(sink);
+                Ok(format!(
+                    "up/{}/{}",
+                    join_segments(source_segments),
+                    join_segments(sink_segments)
+                ))
             }
         }
     }

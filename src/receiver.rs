@@ -89,8 +89,6 @@ async fn register_listener_and_send(
 }
 
 #[test_case::test_case("vehicle1", 12_000, "//vehicle1/10A10B/1/CA5D", "//vehicle1/10A10B/1/CA5D"; "specific source filter")]
-#[test_case::test_case("vehicle1", 0, "/D5A/3/9999", "//vehicle1/D5A/3/FFFF"; "source filter with wildcard resource ID")]
-#[test_case::test_case("vehicle1", 12_000, "//vehicle1/70222/2/8001", "//*/FFFF0222/2/8001"; "source filter with wildcard authority and service instance ID")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_publish_gets_to_listener(
     authority: &str,
@@ -99,7 +97,7 @@ async fn test_publish_gets_to_listener(
     source_filter_uri: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let topic = UUri::from_str(topic_uri)?;
-    let source_filter = topic.clone();
+    let source_filter = UUri::from_str(source_filter_uri)?;
 
     let payload = vec![1, 2, 3, 4, 5];
 
@@ -110,6 +108,24 @@ async fn test_publish_gets_to_listener(
         .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
 
     register_listener_and_send(authority, umessage, &source_filter, None).await
+}
+
+#[tokio::test]
+async fn test_exact_listener_dispatch() -> Result<(), Box<dyn std::error::Error>> {
+    let transport = Iceoryx2Transport::new().unwrap();
+    let listener_uri = UUri::from_str("//vehicle1/10A10B/1/CA5D")?;
+    let matching_message = UMessageBuilder::publish(listener_uri.clone()).build_with_payload(vec![1, 2, 3], UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+    let non_matching_message = UMessageBuilder::publish(UUri::from_str("//vehicle2/10A10B/1/CA5D")?).build_with_payload(vec![4, 5, 6], UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+
+    let received_notify = Arc::new(Notify::new());
+    let listener = Arc::new(Receiver::new(matching_message.clone(), received_notify.clone()));
+
+    transport.register_listener(&listener_uri, None, listener).await?;
+    transport.send(non_matching_message).await?;
+    transport.send(matching_message).await?;
+
+    tokio::time::timeout(Duration::from_secs(1), received_notify.notified()).await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
