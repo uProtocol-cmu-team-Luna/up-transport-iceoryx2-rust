@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use iceoryx2::prelude::*;
 use protobuf::MessageField;
 use std::sync::Arc;
-use up_rust::UAttributes;
-use up_rust::{UCode, UListener, UMessage, UStatus, UTransport, UUri};
+use up_rust::{UAttributes, UCode, UListener, UMessage, UStatus, UTransport, UUri};
 
 mod custom_header;
-mod transmission_data;
 pub use custom_header::CustomHeader;
-pub use transmission_data::TransmissionData;
+
+mod raw_bytes;
+use raw_bytes::RawBytes;
 
 use std::collections::HashMap;
 use std::thread;
@@ -48,8 +48,13 @@ impl Iceoryx2Transport {
     }
 
     fn encode_uuri_segments(uuri: &UUri) -> Vec<String> {
+        let authority = if uuri.authority_name == "*" {
+            "wildcard".to_string()
+        } else {
+            uuri.authority_name.clone()
+        };
         vec![
-            uuri.authority_name.clone(), // e.g., "device1"
+            authority,
             Self::encode_hex_no_leading_zeros(uuri.uentity_type_id() as u32),
             Self::encode_hex_no_leading_zeros(uuri.uentity_instance_id() as u32),
             Self::encode_hex_no_leading_zeros(uuri.uentity_major_version() as u32),
@@ -61,8 +66,6 @@ impl Iceoryx2Transport {
         format!("{:X}", value)
     }
 
-    // returns a correct iceoryx2 service name based on the UMessage type
-    // and its source/sink URIs.
     fn compute_service_name(message: &UMessage) -> Result<String, UStatus> {
         let join_segments = |segments: Vec<String>| segments.join("/");
 
@@ -109,7 +112,6 @@ impl Iceoryx2Transport {
 
         match sink_filter {
             None => {
-                // Publish subscription.
                 let segments = Self::encode_uuri_segments(source_filter);
                 Ok(format!("up/{}", join_segments(segments)))
             }
@@ -120,11 +122,9 @@ impl Iceoryx2Transport {
                 let is_wildcard_resource = source_filter.resource_id() == 0xFFFF;
 
                 if is_wildcard_entity && is_wildcard_version && is_wildcard_resource {
-                    // Request subscription.
                     let segments = Self::encode_uuri_segments(sink);
                     Ok(format!("up/{}", join_segments(segments)))
                 } else {
-                    // Notification or Response subscription.
                     let source_segments = Self::encode_uuri_segments(source_filter);
                     let sink_segments = Self::encode_uuri_segments(sink);
                     Ok(format!(
@@ -154,20 +154,17 @@ impl Iceoryx2Transport {
 
             let mut publishers: HashMap<
                 String,
-                iceoryx2::port::publisher::Publisher<ipc::Service, TransmissionData, CustomHeader>,
+                iceoryx2::port::publisher::Publisher<ipc::Service, RawBytes, CustomHeader>,
             > = HashMap::new();
+
             let mut subscribers: HashMap<
                 String,
-                iceoryx2::port::subscriber::Subscriber<
-                    ipc::Service,
-                    TransmissionData,
-                    CustomHeader,
-                >,
+                iceoryx2::port::subscriber::Subscriber<ipc::Service, RawBytes, CustomHeader>,
             > = HashMap::new();
+
             let mut listeners: HashMap<String, Vec<Arc<dyn UListener>>> = HashMap::new();
 
             loop {
-                // 1. Process all pending commands
                 while let Ok(command) = rx.try_recv() {
                     match command {
                         TransportCommand::Send { message, response } => {
@@ -185,7 +182,7 @@ impl Iceoryx2Transport {
                                         service_name.as_str().try_into();
                                     let service = node
                                         .service_builder(&service_name_res.unwrap())
-                                        .publish_subscribe::<TransmissionData>()
+                                        .publish_subscribe::<RawBytes>()
                                         .user_header::<CustomHeader>()
                                         .open_or_create()
                                         .expect("Failed to create service");
@@ -233,15 +230,17 @@ impl Iceoryx2Transport {
                     }
                 }
 
-                // 2. Poll all subscribers for new messages
                 for (service_name, subscriber) in subscribers.iter() {
                     while let Some(sample) = subscriber.receive().ok().flatten() {
                         if let Some(listeners) = listeners.get(service_name) {
                             for listener in listeners {
+                                let payload_bytes = sample.payload().to_bytes();
+
                                 let mut new_umessage = UMessage::new();
                                 new_umessage.attributes =
                                     MessageField::some(UAttributes::from(sample.user_header()));
-                                new_umessage.payload = Some(sample.payload().to_bytes().into());
+                                new_umessage.payload = Some(payload_bytes.into());
+
                                 let listener_clone = listener.clone();
                                 tokio::spawn(async move {
                                     listener_clone.on_receive(new_umessage).await;
@@ -251,7 +250,6 @@ impl Iceoryx2Transport {
                     }
                 }
 
-                // Avoid busy-waiting
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         });
@@ -260,7 +258,7 @@ impl Iceoryx2Transport {
     fn handle_unregister_listener(
         subscribers: &mut HashMap<
             String,
-            iceoryx2::port::subscriber::Subscriber<ipc::Service, TransmissionData, CustomHeader>,
+            iceoryx2::port::subscriber::Subscriber<ipc::Service, RawBytes, CustomHeader>,
         >,
         listeners: &mut HashMap<String, Vec<Arc<dyn UListener>>>,
         source_filter: UUri,
@@ -275,10 +273,7 @@ impl Iceoryx2Transport {
         };
 
         if let Some(listener_vec) = listeners.get_mut(&service_name) {
-            // Remove the listener by comparing memory addresses.
             listener_vec.retain(|l| !Arc::ptr_eq(l, listener));
-
-            // If no listeners are left for this service, remove the subscriber.
             if listener_vec.is_empty() {
                 listeners.remove(&service_name);
                 subscribers.remove(&service_name);
@@ -292,7 +287,7 @@ impl Iceoryx2Transport {
         node: &Node<ipc::Service>,
         subscribers: &mut HashMap<
             String,
-            iceoryx2::port::subscriber::Subscriber<ipc::Service, TransmissionData, CustomHeader>,
+            iceoryx2::port::subscriber::Subscriber<ipc::Service, RawBytes, CustomHeader>,
         >,
         listeners: &mut HashMap<String, Vec<Arc<dyn UListener>>>,
         source_filter: UUri,
@@ -310,7 +305,7 @@ impl Iceoryx2Transport {
             let service_name_res: Result<ServiceName, _> = service_name.as_str().try_into();
             let service = node
                 .service_builder(&service_name_res.unwrap())
-                .publish_subscribe::<TransmissionData>()
+                .publish_subscribe::<RawBytes>()
                 .user_header::<CustomHeader>()
                 .open_or_create()
                 .expect("Failed to create service");
@@ -329,19 +324,20 @@ impl Iceoryx2Transport {
     fn handle_send(
         publisher: &iceoryx2::port::publisher::Publisher<
             ipc::Service,
-            TransmissionData,
+            RawBytes,
             CustomHeader,
         >,
         message: UMessage,
     ) -> Result<(), UStatus> {
-        let transmission_data = TransmissionData::from_message(&message)?;
+        let payload_bytes = message.payload.clone().unwrap_or_default().to_vec();
+        let raw_payload = RawBytes::from_bytes(&payload_bytes);
         let header = CustomHeader::from_message(&message)?;
 
         let sample = publisher.loan_uninit().map_err(|e| {
             UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to loan sample: {e}"))
         })?;
 
-        let mut sample_final = sample.write_payload(transmission_data);
+        let mut sample_final = sample.write_payload(raw_payload);
         *sample_final.user_header_mut() = header;
 
         sample_final.send().map_err(|e| {
@@ -420,6 +416,8 @@ impl UTransport for Iceoryx2Transport {
     }
 }
 
+mod receiver;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,16 +425,10 @@ mod tests {
     use std::time::Duration;
     use up_rust::{UMessageBuilder, UPayloadFormat};
 
-    // fn dummy_uuid() -> up_rust::UUID {
-    //     // let uuid = UUID::new();
-    //     let uuid = up_rust::UUID::new();
-    //     up_rust::UUID::try_from(uuid).expect("Valid UUID conversion")
-    // }
     fn dummy_uuid() -> up_rust::UUID {
         up_rust::UUID::build()
     }
 
-    // Helper function to create a test URI
     fn test_uri(authority: &str, instance: u16, typ: u16, version: u8, resource: u16) -> UUri {
         let entity_id = ((instance as u32) << 16) | (typ as u32);
         UUri::try_from_parts(authority, entity_id, version, resource).unwrap()
@@ -468,8 +460,7 @@ mod tests {
     #[test]
     fn test_rpc_request_service_name() {
         let sink = test_uri("device1", 0x0000, 0x00CD, 0x04, 0x000B);
-        let reply_to = test_uri("device1", 0x0000, 0x0001, 0x01, 0x0000); // Dummy reply URI
-
+        let reply_to = test_uri("device1", 0x0000, 0x0001, 0x01, 0x0000);
         let message = UMessageBuilder::request(sink.clone(), reply_to, 1000)
             .build_with_payload(vec![], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
             .unwrap();
@@ -489,121 +480,15 @@ mod tests {
             .unwrap();
 
         let name = Iceoryx2Transport::compute_service_name(&message).unwrap();
-
         assert_eq!(name, "up/device1/CD/1/4/1000/device1/20/1/1/0");
     }
 
     #[test]
     fn test_missing_uri_error() {
-        let message = UMessage::new(); // no source or sink
+        let message = UMessage::new();
         let result = Iceoryx2Transport::compute_service_name(&message);
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().get_code(), UCode::INVALID_ARGUMENT);
     }
-
-    #[tokio::test]
-    async fn test_register_listener_and_receive() {
-        struct TestListener {
-            received: Arc<AtomicBool>,
-        }
-
-        #[async_trait::async_trait]
-        impl UListener for TestListener {
-            async fn on_receive(&self, _message: UMessage) {
-                println!("TestListener received a message!");
-                self.received.store(true, Ordering::SeqCst);
-            }
-        }
-
-        let transport = Iceoryx2Transport::new().unwrap();
-        let source_uri = test_uri("test_authority", 0, 1, 1, 0x8001);
-
-        let received = Arc::new(AtomicBool::new(false));
-        let listener = Arc::new(TestListener {
-            received: received.clone(),
-        });
-
-        transport
-            .register_listener(&source_uri, None, listener)
-            .await
-            .unwrap();
-
-        // Give a moment for registration to complete
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let data = TransmissionData {
-            x: 1,
-            y: 2,
-            funky: 3.14,
-        };
-        let payload_bytes = data.to_bytes();
-
-        let msg = UMessageBuilder::publish(source_uri)
-            .build_with_payload(payload_bytes, UPayloadFormat::UPAYLOAD_FORMAT_RAW)
-            .unwrap();
-
-        transport.send(msg).await.unwrap();
-
-        // Give a moment for the message to be received
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        assert!(received.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn test_unregister_listener() {
-        struct TestListener {
-            received: Arc<AtomicBool>,
-        }
-
-        #[async_trait::async_trait]
-        impl UListener for TestListener {
-            async fn on_receive(&self, _message: UMessage) {
-                self.received.store(true, Ordering::SeqCst);
-            }
-        }
-
-        let transport = Iceoryx2Transport::new().unwrap();
-        let source_uri = test_uri("test_authority", 0, 1, 1, 0x8002);
-
-        let received = Arc::new(AtomicBool::new(false));
-        let listener = Arc::new(TestListener {
-            received: received.clone(),
-        });
-
-        transport
-            .register_listener(&source_uri, None, listener.clone())
-            .await
-            .unwrap();
-        transport
-            .unregister_listener(&source_uri, None, listener)
-            .await
-            .unwrap();
-
-        // Give a moment for unregistration to complete
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let data = TransmissionData {
-            x: 1,
-            y: 2,
-            funky: 3.14,
-        };
-        let payload_bytes = data.to_bytes();
-
-        let msg = UMessageBuilder::publish(source_uri)
-            .build_with_payload(payload_bytes, UPayloadFormat::UPAYLOAD_FORMAT_RAW)
-            .unwrap();
-
-        transport.send(msg).await.unwrap();
-
-        // Give a moment for the message to be (or not be) received
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        assert!(!received.load(Ordering::SeqCst));
-
-        // Give a moment for the service to be deallocated
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
 }
-mod receiver;

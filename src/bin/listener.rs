@@ -1,12 +1,11 @@
 use std::sync::Arc;
 use tokio::sync::Notify;
 use async_trait::async_trait;
-use up_rust::{UListener, UMessage, UUri};
+use up_rust::{UListener, UMessage, UUri, UTransport};
 use env_logger;
 use std::sync::Once;
 use std::str::FromStr;
-use up_rust::UTransport;
-use up_transport_iceoryx2_rust::{Iceoryx2Transport, TransmissionData};
+use up_transport_iceoryx2_rust::Iceoryx2Transport;
 
 static INIT_LOGGER: Once = Once::new();
 
@@ -23,18 +22,19 @@ pub struct Receiver {
 #[async_trait]
 impl UListener for Receiver {
     async fn on_receive(&self, message: UMessage) {
-        // Optional: deserialize payload to TransmissionData
         if let Some(payload) = &message.payload {
-            match TransmissionData::from_bytes(payload.to_vec()) {
-                Ok(data) => println!("Received data: {:?}", data),
-                Err(_) => println!("Received message but failed to decode payload."),
+            print!("Received payload bytes (decimal): ");
+            for byte in payload {
+                print!("{} ", byte);
             }
+            println!();
         } else {
             println!("Received message with no payload.");
         }
         self.notify.notify_one();
     }
 }
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
