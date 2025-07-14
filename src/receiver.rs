@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use tokio::sync::Notify;
 use log::info;
 
@@ -27,23 +26,25 @@ fn init_logger() {
 
 const MESSAGE_DATA: &str = "Hello World!";
 
-pub struct Receiver{
+pub struct Receiver {
     expected: UMessage,
     notify: Arc<Notify>,
 }
 
-impl Receiver{
+impl Receiver {
     pub fn new(expected: UMessage, notify: Arc<Notify>) -> Self {
         Self { expected, notify }
     }
 }
 
 #[async_trait]
-impl UListener for Receiver{
-    async fn on_receive(&self, message: UMessage) {
+impl UListener for Receiver {
+    async fn on_receive(&self, message: UMessage) -> () {
         if let Some(payload) = &message.payload {
             println!("Received Message ID: {:#?}", message.id());
-            if let (Some(expected_payload), Some(actual_payload)) = (&self.expected.payload, &message.payload) {
+            if let (Some(expected_payload), Some(actual_payload)) =
+                (&self.expected.payload, &message.payload)
+            {
                 assert_eq!(expected_payload, actual_payload);
             } else {
                 panic!("Missing payloads in either expected or actual message");
@@ -64,10 +65,11 @@ async fn register_listener_and_send(
     let transport = Iceoryx2Transport::new().unwrap();
     let notify = Arc::new(Notify::new());
     let receiver = Arc::new(Receiver::new(umessage.clone(), notify.clone()));
-    
+
     transport
         .register_listener(source_filter, sink_filter, receiver)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     // Send UMessage
     info!(
@@ -76,13 +78,14 @@ async fn register_listener_and_send(
         umessage.type_unchecked().to_cloudevent_type()
     );
     transport.send(umessage).await?;
-    Ok(
-        tokio::time::timeout(Duration::from_secs(3), notify.notified())
-            .await
-            .map_err(|_| {
-                UStatus::fail_with_code(UCode::DEADLINE_EXCEEDED, "did not receive message in time")
-            })?,
-    )
+    Ok(tokio::time::timeout(Duration::from_secs(3), notify.notified())
+        .await
+        .map_err(|_| {
+            UStatus::fail_with_code(
+                UCode::DEADLINE_EXCEEDED,
+                "did not receive message in time",
+            )
+        })?)
 }
 
 #[test_case::test_case("vehicle1", 12_000, "//vehicle1/10A10B/1/CA5D", "//vehicle1/10A10B/1/CA5D"; "specific source filter")]
@@ -97,7 +100,8 @@ async fn test_publish_gets_to_listener(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let topic = UUri::from_str(topic_uri)?;
     let source_filter = topic.clone();
-    let payload = vec![1, 2, 3, 4]; // ✅ Raw byte array instead of TransmissionData
+
+    let payload = vec![1, 2, 3, 4, 5];
 
     let umessage = UMessageBuilder::publish(topic.clone())
         .with_priority(up_rust::UPriority::UPRIORITY_CS5)
@@ -189,4 +193,20 @@ async fn test_unregister_listener_stops_processing_of_messages() {
         1,
         "Listener should only process one message"
     );
+}
+
+#[tokio::test]
+async fn test_mock_listener() {
+    use up_rust::MockUListener;
+    let mut listener = MockUListener::new();
+
+    listener
+        .expect_on_receive()
+        .returning(|_message| {
+            println!("Mock listener called!");
+        });
+
+    let message = UMessage::new();
+
+    listener.on_receive(message).await;
 }

@@ -20,16 +20,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let topic = UUri::from_str("//vehicle_shared/10A10B/1/CA5D")?;
     let transport = Iceoryx2Transport::new().unwrap();
 
+    let mut payload: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+
     loop {
-        //  byte array payload
-        let payload: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        // increment each byte
+        for b in payload.iter_mut() {
+            *b = b.wrapping_add(1);
+        }
 
         let umessage = UMessageBuilder::publish(topic.clone())
-            .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+            .build_with_payload(payload.clone(), UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
 
         transport.send(umessage).await?;
 
-        println!("Message sent.");
+        println!("Message sent. Payload: {:?}", payload);
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
