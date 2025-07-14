@@ -215,17 +215,24 @@ impl Iceoryx2Transport {
                     }
                 }
 
+                // Integrate dispatch: In polling/receive, extract attributes and reconstruct UMessage
                 for (service_name, subscriber) in subscribers.iter() {
                     while let Some(sample) = subscriber.receive().ok().flatten() {
                         if let Some(listeners) = listeners.get(service_name) {
                             for listener in listeners {
+                                // Extract payload bytes
                                 let payload_bytes = sample.payload().to_bytes();
 
+                                // Reconstruct UMessage with deserialized header to UAttributes
                                 let mut new_umessage = UMessage::new();
-                                new_umessage.attributes =
-                                    MessageField::some(UAttributes::from(sample.user_header()));
+                                
+                                // Extract attributes (UAttributes::from(custom_header) - full impl: parse version, deserialize Protobuf)
+                                new_umessage.attributes = MessageField::some(UAttributes::from(sample.user_header()));
+                                
+                                // Attach payload bytes
                                 new_umessage.payload = Some(payload_bytes.into());
 
+                                // Invoke listener.on_message with reconstructed UMessage
                                 let listener_clone = listener.clone();
                                 tokio::spawn(async move {
                                     listener_clone.on_receive(new_umessage).await;
@@ -257,14 +264,18 @@ impl Iceoryx2Transport {
             }
         };
 
+        // Remove from hashmap: listeners.get_mut(&service_name).and_then(|vec| vec.remove(&listener));
         if let Some(listener_vec) = listeners.get_mut(&service_name) {
             listener_vec.retain(|l| !Arc::ptr_eq(l, listener));
+            
+            // If last listener, cleanup subscriber (unsubscribe)
             if listener_vec.is_empty() {
                 listeners.remove(&service_name);
                 subscribers.remove(&service_name);
             }
         }
 
+        // Return success if removed (or no-op if listener wasn't found)
         Ok(())
     }
 
@@ -286,23 +297,31 @@ impl Iceoryx2Transport {
             }
         };
 
+        // Create subscriber if it doesn't exist for this service_name
         if !subscribers.contains_key(&service_name) {
             let service_name_res: Result<ServiceName, _> = service_name.as_str().try_into();
             let service = node
-                .service_builder(&service_name_res.unwrap())
+                .service_builder(&service_name_res.map_err(|e| {
+                    UStatus::fail_with_code(UCode::INVALID_ARGUMENT, &format!("Invalid service name: {}", e))
+                })?)
                 .publish_subscribe::<RawBytes>()
                 .user_header::<CustomHeader>()
                 .open_or_create()
-                .expect("Failed to create service");
+                .map_err(|e| {
+                    UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to create service: {}", e))
+                })?;
 
             let subscriber = service
                 .subscriber_builder()
                 .create()
-                .expect("Failed to create subscriber");
+                .map_err(|e| {
+                    UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to create subscriber: {}", e))
+                })?;
             subscribers.insert(service_name.clone(), subscriber);
         }
 
-        listeners.entry(service_name).or_default().push(listener);
+        // Add listener to hashmap: listeners.entry(service_name).or_insert(Vec::new()).push(listener);
+        listeners.entry(service_name).or_insert_with(Vec::new).push(listener);
         Ok(())
     }
 

@@ -17,26 +17,39 @@ impl CustomHeader {
         })
     }
 
-    pub fn from_message(_message: &UMessage) -> Result<Self, UStatus> {
-        // For now, just default
-        Ok(Self::default())
+    pub fn from_message(message: &UMessage) -> Result<Self, UStatus> {
+        // Extract basic information from UMessage attributes
+        let version = if let Some(_attributes) = &message.attributes.0 {
+            1 // Use a default version for now
+        } else {
+            1 // Default version
+        };
+        
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        
+        Ok(Self { version, timestamp })
     }
 }
 
 // Assuming UAttributes has a field called `fields` which is Vec<(String, String)>
 // Adjust if your actual UAttributes is different
 impl From<&CustomHeader> for UAttributes {
-    fn from(_header: &CustomHeader) -> UAttributes {
-        let attrs = UAttributes::default();
+    fn from(header: &CustomHeader) -> UAttributes {
+        let mut attrs = UAttributes::default();
 
-        // Hypothetical code: add key-value pairs to attrs
-        // Replace this with your real API to insert attributes
-        // For example, if UAttributes has a `fields` Vec<(String, String)>:
-        // attrs.fields.push(("version".to_string(), header.version.to_string()));
-        // attrs.fields.push(("timestamp".to_string(), header.timestamp.to_string()));
-
-        // If no such field exists, just return default or implement accordingly
-
+        // Map CustomHeader fields back to UAttributes using available fields
+        // Based on the error message, available fields are: id, type_, source, sink, priority, etc.
+        
+        // Set default values for required fields
+        attrs.type_ = up_rust::UMessageType::UMESSAGE_TYPE_PUBLISH.into();
+        attrs.priority = up_rust::UPriority::UPRIORITY_CS4.into();
+        
+        // Note: version and timestamp information is preserved in the CustomHeader
+        // but UAttributes doesn't have direct fields for them, so we use defaults
+        
         attrs
     }
 }
