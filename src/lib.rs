@@ -216,10 +216,19 @@ impl Iceoryx2Transport {
                 }
 
                 // Integrate dispatch: In polling/receive, extract attributes and reconstruct UMessage
-                for (service_name, subscriber) in subscribers.iter() {
-                    while let Some(sample) = subscriber.receive().ok().flatten() {
-                        if let Some(listeners) = listeners.get(service_name) {
-                            for listener in listeners {
+                // Only process subscribers that have active listeners
+                let active_services: Vec<(String, Vec<Arc<dyn UListener>>)> = listeners
+                    .iter()
+                    .filter(|(service_name, listeners_vec)| {
+                        !listeners_vec.is_empty() && subscribers.contains_key(*service_name)
+                    })
+                    .map(|(service_name, listeners_vec)| (service_name.clone(), listeners_vec.clone()))
+                    .collect();
+                
+                for (service_name, listeners_to_notify) in active_services {
+                    if let Some(subscriber) = subscribers.get(&service_name) {
+                        while let Some(sample) = subscriber.receive().ok().flatten() {
+                            for listener in &listeners_to_notify {
                                 // Extract payload bytes
                                 let payload_bytes = sample.payload().to_bytes();
 
@@ -427,7 +436,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-    use up_rust::{UMessageBuilder, UPayloadFormat};
+    use up_rust::{UMessageBuilder, UPayloadFormat, MockUListener};
 
     fn dummy_uuid() -> up_rust::UUID {
         up_rust::UUID::build()
@@ -494,5 +503,139 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().get_code(), UCode::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn test_register_listener_creates_subscriber() {
+        let transport = Iceoryx2Transport::new().unwrap();
+        let uri = UUri::try_from_parts("vehicle", 0x123, 1, 0x456).unwrap();
+        let listener = Arc::new(MockUListener::new());
+
+        // Register listener should succeed
+        let result = transport.register_listener(&uri, None, listener.clone()).await;
+        assert!(result.is_ok(), "Listener registration should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_register_duplicate_listeners() {
+        let transport = Iceoryx2Transport::new().unwrap();
+        let uri = UUri::try_from_parts("vehicle", 0x123, 1, 0x456).unwrap();
+        let listener1 = Arc::new(MockUListener::new());
+        let listener2 = Arc::new(MockUListener::new());
+
+        // Register first listener
+        let result1 = transport.register_listener(&uri, None, listener1.clone()).await;
+        assert!(result1.is_ok(), "First listener registration should succeed");
+
+        // Register second listener for same URI (should reuse subscriber)
+        let result2 = transport.register_listener(&uri, None, listener2.clone()).await;
+        assert!(result2.is_ok(), "Second listener registration should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_unregister_listener_cleanup() {
+        let transport = Iceoryx2Transport::new().unwrap();
+        let uri = UUri::try_from_parts("vehicle", 0x123, 1, 0x456).unwrap();
+        let listener = Arc::new(MockUListener::new());
+
+        // Register listener
+        transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+
+        // Unregister listener should succeed
+        let result = transport.unregister_listener(&uri, None, listener.clone()).await;
+        assert!(result.is_ok(), "Listener unregistration should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_listener() {
+        let transport = Iceoryx2Transport::new().unwrap();
+        let uri = UUri::try_from_parts("vehicle", 0x123, 1, 0x456).unwrap();
+        let listener = Arc::new(MockUListener::new());
+
+        // Unregister non-existent listener should be no-op and succeed
+        let result = transport.unregister_listener(&uri, None, listener.clone()).await;
+        assert!(result.is_ok(), "Unregistering non-existent listener should succeed as no-op");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_unregisters() {
+        let transport = Iceoryx2Transport::new().unwrap();
+        let uri = UUri::try_from_parts("vehicle", 0x123, 1, 0x456).unwrap();
+        let listener = Arc::new(MockUListener::new());
+
+        // Register listener
+        transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+
+        // First unregister should succeed
+        let result1 = transport.unregister_listener(&uri, None, listener.clone()).await;
+        assert!(result1.is_ok(), "First unregister should succeed");
+
+        // Second unregister should be no-op and succeed
+        let result2 = transport.unregister_listener(&uri, None, listener.clone()).await;
+        assert!(result2.is_ok(), "Second unregister should succeed as no-op");
+    }
+
+    #[tokio::test]
+    async fn test_unregister_cycle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let transport = Iceoryx2Transport::new().unwrap();
+        let uri = UUri::try_from_parts(&format!("vehicle{}", std::process::id()), 0x123, 1, 0x9000).unwrap();
+        
+        struct CountingListener {
+            count: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl UListener for CountingListener {
+            async fn on_receive(&self, _msg: UMessage) {
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let listener = Arc::new(CountingListener {
+            count: AtomicUsize::new(0),
+        });
+
+        // Register listener
+        transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+
+        // Wait for registration to take effect
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Send a message
+        let message = UMessageBuilder::publish(uri.clone()).build().unwrap();
+        transport.send(message.clone()).await.unwrap();
+
+        // Wait for message processing
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Record count before unregister
+        let count_before_unregister = listener.count.load(Ordering::SeqCst);
+        assert!(count_before_unregister >= 1, "Should have received at least one message");
+
+        // Unregister listener
+        transport.unregister_listener(&uri, None, listener.clone()).await.unwrap();
+
+        // Wait for unregister to take effect
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Send more messages after unregister
+        for _ in 0..3 {
+            transport.send(message.clone()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Wait to ensure no additional messages are processed
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Verify no additional messages were received after unregister
+        let count_after_unregister = listener.count.load(Ordering::SeqCst);
+        assert_eq!(
+            count_before_unregister, count_after_unregister,
+            "Should not receive messages after unregister. Before: {}, After: {}",
+            count_before_unregister, count_after_unregister
+        );
     }
 }
