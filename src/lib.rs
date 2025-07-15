@@ -107,9 +107,6 @@ mod tests {
     #[test]
     fn test_publish_service_name() {
         let source = test_uri("device1", 0x0000, 0x10AB, 0x03, 0x7FFF);
-        // let message = UMessageBuilder::publish(source.clone())
-        //     .build_with_payload(vec![], UPayloadFormat::UPAYLOAD_FORMAT_RAW)
-        //     .unwrap();
 
         let name = Iceoryx2Transport::compute_service_name(&source,None).unwrap();
         assert_eq!(name, "up/device1/10AB/0/3/7FFF");
