@@ -222,9 +222,11 @@ impl Iceoryx2Transport {
                     .filter(|(service_name, listeners_vec)| {
                         !listeners_vec.is_empty() && subscribers.contains_key(*service_name)
                     })
-                    .map(|(service_name, listeners_vec)| (service_name.clone(), listeners_vec.clone()))
+                    .map(|(service_name, listeners_vec)| {
+                        (service_name.clone(), listeners_vec.clone())
+                    })
                     .collect();
-                
+
                 for (service_name, listeners_to_notify) in active_services {
                     if let Some(subscriber) = subscribers.get(&service_name) {
                         while let Some(sample) = subscriber.receive().ok().flatten() {
@@ -234,10 +236,11 @@ impl Iceoryx2Transport {
 
                                 // Reconstruct UMessage with deserialized header to UAttributes
                                 let mut new_umessage = UMessage::new();
-                                
+
                                 // Extract attributes (UAttributes::from(custom_header) - full impl: parse version, deserialize Protobuf)
-                                new_umessage.attributes = MessageField::some(UAttributes::from(sample.user_header()));
-                                
+                                new_umessage.attributes =
+                                    MessageField::some(UAttributes::from(sample.user_header()));
+
                                 // Attach payload bytes
                                 new_umessage.payload = Some(payload_bytes.into());
 
@@ -276,7 +279,7 @@ impl Iceoryx2Transport {
         // Remove from hashmap: listeners.get_mut(&service_name).and_then(|vec| vec.remove(&listener));
         if let Some(listener_vec) = listeners.get_mut(&service_name) {
             listener_vec.retain(|l| !Arc::ptr_eq(l, listener));
-            
+
             // If last listener, cleanup subscriber (unsubscribe)
             if listener_vec.is_empty() {
                 listeners.remove(&service_name);
@@ -311,35 +314,40 @@ impl Iceoryx2Transport {
             let service_name_res: Result<ServiceName, _> = service_name.as_str().try_into();
             let service = node
                 .service_builder(&service_name_res.map_err(|e| {
-                    UStatus::fail_with_code(UCode::INVALID_ARGUMENT, &format!("Invalid service name: {}", e))
+                    UStatus::fail_with_code(
+                        UCode::INVALID_ARGUMENT,
+                        &format!("Invalid service name: {}", e),
+                    )
                 })?)
                 .publish_subscribe::<RawBytes>()
                 .user_header::<CustomHeader>()
                 .open_or_create()
                 .map_err(|e| {
-                    UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to create service: {}", e))
+                    UStatus::fail_with_code(
+                        UCode::INTERNAL,
+                        &format!("Failed to create service: {}", e),
+                    )
                 })?;
 
-            let subscriber = service
-                .subscriber_builder()
-                .create()
-                .map_err(|e| {
-                    UStatus::fail_with_code(UCode::INTERNAL, &format!("Failed to create subscriber: {}", e))
-                })?;
+            let subscriber = service.subscriber_builder().create().map_err(|e| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    &format!("Failed to create subscriber: {}", e),
+                )
+            })?;
             subscribers.insert(service_name.clone(), subscriber);
         }
 
         // Add listener to hashmap: listeners.entry(service_name).or_insert(Vec::new()).push(listener);
-        listeners.entry(service_name).or_insert_with(Vec::new).push(listener);
+        listeners
+            .entry(service_name)
+            .or_insert_with(Vec::new)
+            .push(listener);
         Ok(())
     }
 
     fn handle_send(
-        publisher: &iceoryx2::port::publisher::Publisher<
-            ipc::Service,
-            RawBytes,
-            CustomHeader,
-        >,
+        publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, RawBytes, CustomHeader>,
         message: UMessage,
     ) -> Result<(), UStatus> {
         let payload_bytes = message.payload.clone().unwrap_or_default().to_vec();
@@ -436,7 +444,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-    use up_rust::{UMessageBuilder, UPayloadFormat, MockUListener};
+    use up_rust::{MockUListener, UMessageBuilder, UPayloadFormat};
 
     fn dummy_uuid() -> up_rust::UUID {
         up_rust::UUID::build()
@@ -512,7 +520,9 @@ mod tests {
         let listener = Arc::new(MockUListener::new());
 
         // Register listener should succeed
-        let result = transport.register_listener(&uri, None, listener.clone()).await;
+        let result = transport
+            .register_listener(&uri, None, listener.clone())
+            .await;
         assert!(result.is_ok(), "Listener registration should succeed");
     }
 
@@ -524,12 +534,22 @@ mod tests {
         let listener2 = Arc::new(MockUListener::new());
 
         // Register first listener
-        let result1 = transport.register_listener(&uri, None, listener1.clone()).await;
-        assert!(result1.is_ok(), "First listener registration should succeed");
+        let result1 = transport
+            .register_listener(&uri, None, listener1.clone())
+            .await;
+        assert!(
+            result1.is_ok(),
+            "First listener registration should succeed"
+        );
 
         // Register second listener for same URI (should reuse subscriber)
-        let result2 = transport.register_listener(&uri, None, listener2.clone()).await;
-        assert!(result2.is_ok(), "Second listener registration should succeed");
+        let result2 = transport
+            .register_listener(&uri, None, listener2.clone())
+            .await;
+        assert!(
+            result2.is_ok(),
+            "Second listener registration should succeed"
+        );
     }
 
     #[tokio::test]
@@ -539,10 +559,15 @@ mod tests {
         let listener = Arc::new(MockUListener::new());
 
         // Register listener
-        transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+        transport
+            .register_listener(&uri, None, listener.clone())
+            .await
+            .unwrap();
 
         // Unregister listener should succeed
-        let result = transport.unregister_listener(&uri, None, listener.clone()).await;
+        let result = transport
+            .unregister_listener(&uri, None, listener.clone())
+            .await;
         assert!(result.is_ok(), "Listener unregistration should succeed");
     }
 
@@ -553,8 +578,13 @@ mod tests {
         let listener = Arc::new(MockUListener::new());
 
         // Unregister non-existent listener should be no-op and succeed
-        let result = transport.unregister_listener(&uri, None, listener.clone()).await;
-        assert!(result.is_ok(), "Unregistering non-existent listener should succeed as no-op");
+        let result = transport
+            .unregister_listener(&uri, None, listener.clone())
+            .await;
+        assert!(
+            result.is_ok(),
+            "Unregistering non-existent listener should succeed as no-op"
+        );
     }
 
     #[tokio::test]
@@ -564,14 +594,21 @@ mod tests {
         let listener = Arc::new(MockUListener::new());
 
         // Register listener
-        transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+        transport
+            .register_listener(&uri, None, listener.clone())
+            .await
+            .unwrap();
 
         // First unregister should succeed
-        let result1 = transport.unregister_listener(&uri, None, listener.clone()).await;
+        let result1 = transport
+            .unregister_listener(&uri, None, listener.clone())
+            .await;
         assert!(result1.is_ok(), "First unregister should succeed");
 
         // Second unregister should be no-op and succeed
-        let result2 = transport.unregister_listener(&uri, None, listener.clone()).await;
+        let result2 = transport
+            .unregister_listener(&uri, None, listener.clone())
+            .await;
         assert!(result2.is_ok(), "Second unregister should succeed as no-op");
     }
 
@@ -581,8 +618,9 @@ mod tests {
         use std::time::Duration;
 
         let transport = Iceoryx2Transport::new().unwrap();
-        let uri = UUri::try_from_parts(&format!("vehicle{}", std::process::id()), 0x123, 1, 0x9000).unwrap();
-        
+        let uri = UUri::try_from_parts(&format!("vehicle{}", std::process::id()), 0x123, 1, 0x9000)
+            .unwrap();
+
         struct CountingListener {
             count: AtomicUsize,
         }
@@ -599,7 +637,10 @@ mod tests {
         });
 
         // Register listener
-        transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+        transport
+            .register_listener(&uri, None, listener.clone())
+            .await
+            .unwrap();
 
         // Wait for registration to take effect
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -613,10 +654,16 @@ mod tests {
 
         // Record count before unregister
         let count_before_unregister = listener.count.load(Ordering::SeqCst);
-        assert!(count_before_unregister >= 1, "Should have received at least one message");
+        assert!(
+            count_before_unregister >= 1,
+            "Should have received at least one message"
+        );
 
         // Unregister listener
-        transport.unregister_listener(&uri, None, listener.clone()).await.unwrap();
+        transport
+            .unregister_listener(&uri, None, listener.clone())
+            .await
+            .unwrap();
 
         // Wait for unregister to take effect
         tokio::time::sleep(Duration::from_millis(200)).await;

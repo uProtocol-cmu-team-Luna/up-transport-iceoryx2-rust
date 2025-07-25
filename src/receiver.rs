@@ -3,16 +3,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::Notify;
 use log::info;
+use tokio::sync::Notify;
 
+use env_logger;
+use iceoryx2::prelude::*;
+use std::str::FromStr;
 use up_rust::{
-    MockUListener,UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
+    MockUListener, UAttributes, UCode, UListener, UMessage, UMessageBuilder, UPayloadFormat,
     UStatus, UTransport, UUri,
 };
-use std::str::FromStr;
-use iceoryx2::prelude::*;
-use env_logger;
 
 use std::sync::Once;
 
@@ -78,14 +78,13 @@ async fn register_listener_and_send(
         umessage.type_unchecked().to_cloudevent_type()
     );
     transport.send(umessage).await?;
-    Ok(tokio::time::timeout(Duration::from_secs(3), notify.notified())
-        .await
-        .map_err(|_| {
-            UStatus::fail_with_code(
-                UCode::DEADLINE_EXCEEDED,
-                "did not receive message in time",
-            )
-        })?)
+    Ok(
+        tokio::time::timeout(Duration::from_secs(3), notify.notified())
+            .await
+            .map_err(|_| {
+                UStatus::fail_with_code(UCode::DEADLINE_EXCEEDED, "did not receive message in time")
+            })?,
+    )
 }
 
 #[test_case::test_case("vehicle1", 12_000, "//vehicle1/10A10B/1/CA5D", "//vehicle1/10A10B/1/CA5D"; "specific source filter")]
@@ -114,13 +113,21 @@ async fn test_publish_gets_to_listener(
 async fn test_exact_listener_dispatch() -> Result<(), Box<dyn std::error::Error>> {
     let transport = Iceoryx2Transport::new().unwrap();
     let listener_uri = UUri::from_str("//vehicle1/10A10B/1/CA5D")?;
-    let matching_message = UMessageBuilder::publish(listener_uri.clone()).build_with_payload(vec![1, 2, 3], UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
-    let non_matching_message = UMessageBuilder::publish(UUri::from_str("//vehicle2/10A10B/1/CA5D")?).build_with_payload(vec![4, 5, 6], UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+    let matching_message = UMessageBuilder::publish(listener_uri.clone())
+        .build_with_payload(vec![1, 2, 3], UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
+    let non_matching_message =
+        UMessageBuilder::publish(UUri::from_str("//vehicle2/10A10B/1/CA5D")?)
+            .build_with_payload(vec![4, 5, 6], UPayloadFormat::UPAYLOAD_FORMAT_RAW)?;
 
     let received_notify = Arc::new(Notify::new());
-    let listener = Arc::new(Receiver::new(matching_message.clone(), received_notify.clone()));
+    let listener = Arc::new(Receiver::new(
+        matching_message.clone(),
+        received_notify.clone(),
+    ));
 
-    transport.register_listener(&listener_uri, None, listener).await?;
+    transport
+        .register_listener(&listener_uri, None, listener)
+        .await?;
     transport.send(non_matching_message).await?;
     transport.send(matching_message).await?;
 
@@ -157,7 +164,10 @@ async fn test_unregister_listener_stops_processing_of_messages() {
         .expect("failed to build");
 
     // Register listener
-    transport.register_listener(&uri, None, listener.clone()).await.unwrap();
+    transport
+        .register_listener(&uri, None, listener.clone())
+        .await
+        .unwrap();
 
     // Let subscriber start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -178,7 +188,10 @@ async fn test_unregister_listener_stops_processing_of_messages() {
     let count_before_unregister = listener.hit_count.load(Ordering::SeqCst);
 
     // Unregister
-    transport.unregister_listener(&uri, None, listener.clone()).await.unwrap();
+    transport
+        .unregister_listener(&uri, None, listener.clone())
+        .await
+        .unwrap();
 
     // Wait for unregister to take effect
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -206,11 +219,9 @@ async fn test_mock_listener() {
     use up_rust::MockUListener;
     let mut listener = MockUListener::new();
 
-    listener
-        .expect_on_receive()
-        .returning(|_message| {
-            println!("Mock listener called!");
-        });
+    listener.expect_on_receive().returning(|_message| {
+        println!("Mock listener called!");
+    });
 
     let message = UMessage::new();
 
