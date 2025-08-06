@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use protobuf::MessageField;
 use iceoryx2::prelude::*;
 use tokio;
+use tokio::time::{interval, Duration};
 use up_rust::{UAttributes, UCode, UListener, UMessage, UStatus, UTransport, UUri};
 mod custom_header;
 pub use custom_header::CustomHeader;
@@ -151,17 +152,22 @@ Ok(Self { command_sender: tx })
 
             let mut listeners: HashMap<String, Vec<Arc<dyn UListener>>> = HashMap::new();
 
+            let mut poll_interval=interval(Duration::from_millis(10));
+
             loop {
-                while let Ok(command) = rx.try_recv() {
-                    match command {
-                        TransportCommand::Send { message, response } => {
-                            let service_name = match Self::compute_service_name(&message) {
-                                Ok(name) => name,
-                                Err(e) => {
-                                    let _ = response.send(Err(e));
-                                    continue;
-                                }
-                            };
+                tokio::select!{
+                    maybe_command = rx.recv() => {
+                match maybe_command {
+                    Some(command) => {
+                        match command {
+                            TransportCommand::Send { message, response } => {
+                                let service_name = match Self::compute_service_name(&message) {
+                                    Ok(name) => name,
+                                    Err(e) => {
+                                        let _ = response.send(Err(e));
+                                        continue;
+                                    }
+                                };
 
                             let publisher =
                                 publishers.entry(service_name.clone()).or_insert_with(|| {
@@ -216,18 +222,16 @@ Ok(Self { command_sender: tx })
                         }
                     }
                 }
-
-                // Integrate dispatch: In polling/receive, extract attributes and reconstruct UMessage
-                // Only process subscribers that have active listeners
-                let active_services: Vec<(String, Vec<Arc<dyn UListener>>)> = listeners
+                None => break,
+            }
+        }
+        _ = poll_interval.tick() => {
+                let active_services: Vec<_> = listeners
                     .iter()
-                    .filter(|(service_name, listeners_vec)| {
-                        !listeners_vec.is_empty() && subscribers.contains_key(*service_name)
-                    })
-                    .map(|(service_name, listeners_vec)| {
-                        (service_name.clone(), listeners_vec.clone())
-                    })
+                    .filter(|(service_name, lst)| !lst.is_empty() && subscribers.contains_key(*service_name))
+                    .map(|(service_name, lst)| (service_name.clone(), lst.clone()))
                     .collect();
+
 
                 for (service_name, listeners_to_notify) in active_services {
                     if let Some(subscriber) = subscribers.get(&service_name) {
@@ -256,7 +260,8 @@ Ok(Self { command_sender: tx })
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
             }
         }
 
