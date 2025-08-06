@@ -1,50 +1,58 @@
-use async_trait::async_trait;
-use iceoryx2::prelude::*;
-use protobuf::MessageField;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread;
+use async_trait::async_trait;
+use protobuf::MessageField;
+use iceoryx2::prelude::*;
+use tokio;
 use up_rust::{UAttributes, UCode, UListener, UMessage, UStatus, UTransport, UUri};
-
 mod custom_header;
 pub use custom_header::CustomHeader;
 
 mod raw_bytes;
 use raw_bytes::RawBytes;
 
-use std::collections::HashMap;
-use std::thread;
+
 
 enum TransportCommand {
     Send {
         message: UMessage,
-        response: std::sync::mpsc::Sender<Result<(), UStatus>>,
+        response: tokio::sync::oneshot::Sender<Result<(), UStatus>>,
     },
     RegisterListener {
         source_filter: UUri,
         sink_filter: Option<UUri>,
         listener: Arc<dyn UListener>,
-        response: std::sync::mpsc::Sender<Result<(), UStatus>>,
+        response: tokio::sync::oneshot::Sender<Result<(), UStatus>>,
     },
     UnregisterListener {
         source_filter: UUri,
         sink_filter: Option<UUri>,
         listener: Arc<dyn UListener>,
-        response: std::sync::mpsc::Sender<Result<(), UStatus>>,
+        response: tokio::sync::oneshot::Sender<Result<(), UStatus>>,
     },
 }
 
 pub struct Iceoryx2Transport {
-    command_sender: std::sync::mpsc::Sender<TransportCommand>,
+    command_sender: tokio::sync::mpsc::Sender<TransportCommand>,
 }
 
 impl Iceoryx2Transport {
     pub fn new() -> Result<Self, UStatus> {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(32);  //buffer usize
 
-        thread::spawn(move || {
-            Self::background_task(rx);
-        });
+        std::thread::spawn(move || {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-        Ok(Self { command_sender: tx })
+    runtime.block_on(async {
+        Self::background_task(rx).await;
+    });
+});
+
+Ok(Self { command_sender: tx })
     }
 
     fn encode_uuri_segments(uuri: &UUri) -> Vec<String> {
@@ -122,20 +130,14 @@ impl Iceoryx2Transport {
         }
     }
 
-    fn background_task(rx: std::sync::mpsc::Receiver<TransportCommand>) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create Tokio runtime");
-
-        rt.block_on(async {
-            let node = match NodeBuilder::new().create::<ipc::Service>() {
-                Ok(node) => node,
-                Err(e) => {
-                    eprintln!("Failed to create iceoryx2 node: {}", e);
-                    return;
-                }
-            };
+    async fn background_task(mut rx: tokio::sync::mpsc::Receiver<TransportCommand>) {
+        let node = match NodeBuilder::new().create::<ipc::Service>() {
+        Ok(node) => node,
+        Err(e) => {
+            eprintln!("Failed to create iceoryx2 node: {}", e);
+            return;
+        }
+    };
 
             let mut publishers: HashMap<
                 String,
@@ -256,8 +258,7 @@ impl Iceoryx2Transport {
 
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-        });
-    }
+        }
 
     fn handle_unregister_listener(
         subscribers: &mut HashMap<
@@ -369,21 +370,21 @@ impl Iceoryx2Transport {
     }
 }
 
+
 #[async_trait]
 impl UTransport for Iceoryx2Transport {
     async fn send(&self, message: UMessage) -> Result<(), UStatus> {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
         let command = TransportCommand::Send {
             message,
             response: tx,
         };
 
-        self.command_sender
-            .send(command)
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
-
-        rx.recv().map_err(|_| {
+        self.command_sender.send(command).await.map_err(|_| {
+    UStatus::fail_with_code(UCode::INTERNAL, "Background task has died")
+})?; 
+        rx.await.map_err(|_| {
             UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed")
         })?
     }
@@ -394,7 +395,7 @@ impl UTransport for Iceoryx2Transport {
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UListener>,
     ) -> Result<(), UStatus> {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) =  tokio::sync::oneshot::channel();
 
         let command = TransportCommand::RegisterListener {
             source_filter: source_filter.clone(),
@@ -403,11 +404,10 @@ impl UTransport for Iceoryx2Transport {
             response: tx,
         };
 
-        self.command_sender
-            .send(command)
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
-
-        rx.recv().map_err(|_| {
+        self.command_sender.send(command).await.map_err(|_| {
+    UStatus::fail_with_code(UCode::INTERNAL, "Background task has died")
+})?; 
+        rx.await.map_err(|_| {
             UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed")
         })?
     }
@@ -418,7 +418,7 @@ impl UTransport for Iceoryx2Transport {
         sink_filter: Option<&UUri>,
         listener: Arc<dyn UListener>,
     ) -> Result<(), UStatus> {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) =  tokio::sync::oneshot::channel();
 
         let command = TransportCommand::UnregisterListener {
             source_filter: source_filter.clone(),
@@ -427,17 +427,16 @@ impl UTransport for Iceoryx2Transport {
             response: tx,
         };
 
-        self.command_sender
-            .send(command)
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Background task has died"))?;
-
-        rx.recv().map_err(|_| {
+       self.command_sender.send(command).await.map_err(|_| {
+    UStatus::fail_with_code(UCode::INTERNAL, "Background task has died")
+})?; 
+        rx.await.map_err(|_| {
             UStatus::fail_with_code(UCode::INTERNAL, "Background task response failed")
         })?
     }
 }
 
-mod receiver;
+//pub mod receiver;
 
 #[cfg(test)]
 mod tests {
